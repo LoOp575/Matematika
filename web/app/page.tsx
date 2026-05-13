@@ -648,7 +648,7 @@ function ForecastTab({ klines, stats }: { klines: Kline[]; stats: Stats }) {
             <YAxis stroke="#374151" fontSize={10} domain={["auto", "auto"]} tickFormatter={(v: number) => `$${formatLargeNumber(v)}`} />
             <Tooltip
               contentStyle={{ background: "#0f0f1a", border: "1px solid #7c3aed50", borderRadius: 4, fontFamily: "monospace", fontSize: 11 }}
-              formatter={(value: number | null, name: string) => [value !== null && value !== undefined ? `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "-", name]}
+              formatter={(value) => [typeof value === "number" ? `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "-"]}
             />
             {/* P90 (upper) and P10 (lower) bands shown as filled area */}
             <Area type="monotone" dataKey="p90" stroke="#a855f7" strokeOpacity={0.6} strokeWidth={1} fill="#a855f720" name="P90 (bullish)" isAnimationActive={false} />
