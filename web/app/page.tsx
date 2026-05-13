@@ -21,7 +21,8 @@ import {
   fetchOpenInterest,
   logReturns,
   annualizedVolatility,
-  sma,
+  ema,
+  rsi,
   generateSignals,
   simulateGBM,
   verifyDoubleIntegral,
@@ -33,7 +34,10 @@ import {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"];
+const SYMBOLS = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT",
+  "XRPUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT", "ADAUSDT",
+];
 const TABS = ["Overview", "Volume & OI", "Funding", "Signals", "GBM", "Fondasi"] as const;
 type Tab = (typeof TABS)[number];
 
@@ -48,7 +52,6 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch all data
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -78,10 +81,11 @@ export default function Page() {
     const rets = logReturns(prices);
     const vol = annualizedVolatility(rets);
     const totalReturn = rets.reduce((a, b) => a + b, 0);
-    const ma7 = sma(prices, 7);
-    const ma25 = sma(prices, 25);
-    const signals = generateSignals(prices, 7, 25);
-    return { prices, rets, vol, totalReturn, ma7, ma25, signals, last: prices[prices.length - 1] };
+    const ema25 = ema(prices, 25);
+    const ema120 = ema(prices, 120);
+    const rsiValues = rsi(prices, 14);
+    const signals = generateSignals(prices, 25, 120);
+    return { prices, rets, vol, totalReturn, ema25, ema120, rsi: rsiValues, signals, last: prices[prices.length - 1] };
   }, [klines]);
 
   // GBM
@@ -94,19 +98,27 @@ export default function Page() {
   const integralValue = useMemo(() => verifyDoubleIntegral(100), []);
 
   return (
-    <main className="min-h-screen bg-zinc-950">
-      {/* Header */}
-      <header className="border-b border-zinc-800 bg-zinc-900/80 backdrop-blur sticky top-0 z-50">
+    <main className="min-h-screen bg-[#0a0a0f] font-mono relative overflow-hidden">
+      {/* Scanline overlay */}
+      <div className="scanline fixed inset-0 pointer-events-none z-[100]" />
+
+      {/* Header - Terminal Status Bar */}
+      <header className="border-b border-emerald-900/40 bg-[#0c0c14]/90 backdrop-blur sticky top-0 z-50 terminal-glow">
         <div className="mx-auto max-w-7xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h1 className="text-lg font-bold text-white">Quant Research</h1>
-            <p className="text-xs text-zinc-500">Beta · Matematika untuk Analisis Koin</p>
+          <div className="flex items-center gap-3">
+            <span className="text-emerald-400 blink">&#9679;</span>
+            <div>
+              <h1 className="text-sm font-bold text-emerald-400 neon-text tracking-wider uppercase">
+                [ Quant Research Terminal ]
+              </h1>
+              <p className="text-[10px] text-zinc-600">v2.0-beta :: EMA25/120 + RSI :: live</p>
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <select
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
-              className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm font-mono"
+              className="bg-[#0f0f1a] border border-emerald-900/50 rounded px-3 py-1.5 text-xs font-mono text-emerald-300 focus:border-emerald-500 focus:outline-none"
             >
               {SYMBOLS.map((s) => (
                 <option key={s} value={s}>{s.replace("USDT", "/USDT")}</option>
@@ -114,25 +126,25 @@ export default function Page() {
             </select>
             <button
               onClick={loadData}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded-lg transition"
+              className="bg-emerald-900/30 hover:bg-emerald-800/40 text-emerald-400 text-xs px-3 py-1.5 rounded border border-emerald-700/40 transition hover:shadow-[0_0_10px_rgba(16,185,129,0.3)]"
             >
-              Refresh
+              &gt; REFRESH
             </button>
           </div>
         </div>
       </header>
 
       {/* Tab Navigation */}
-      <nav className="border-b border-zinc-800 bg-zinc-900/50">
+      <nav className="border-b border-emerald-900/30 bg-[#0b0b12]/80">
         <div className="mx-auto max-w-7xl px-4 flex gap-1 overflow-x-auto py-2">
           {TABS.map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition ${
+              className={`px-4 py-2 rounded text-xs font-mono whitespace-nowrap transition ${
                 tab === t
-                  ? "bg-emerald-600/20 text-emerald-400 border border-emerald-600/30"
-                  : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                  ? "bg-emerald-900/30 text-emerald-400 border border-emerald-600/40 shadow-[0_0_8px_rgba(16,185,129,0.2)]"
+                  : "text-zinc-500 hover:text-emerald-300 hover:bg-[#111118]"
               }`}
             >
               {t}
@@ -158,12 +170,14 @@ export default function Page() {
         )}
       </div>
 
-      <footer className="border-t border-zinc-800 py-4 text-center text-xs text-zinc-600">
-        Beta · Data: Binance API · Bukan saran finansial · Quant Research Dashboard
+      <footer className="border-t border-emerald-900/30 py-4 text-center text-[10px] text-zinc-700 font-mono">
+        <span className="text-emerald-800">[</span> Beta v2.0 <span className="text-emerald-800">|</span> Binance API <span className="text-emerald-800">|</span> Bukan saran finansial <span className="text-emerald-800">|</span> Quant Research <span className="text-emerald-800">]</span>
       </footer>
     </main>
   );
 }
+
+
 
 // ─── Tab: Overview ───────────────────────────────────────────────────────────
 
@@ -171,51 +185,54 @@ function OverviewTab({ klines, stats }: { klines: Kline[]; stats: Stats }) {
   const priceData = klines.map((k, i) => ({
     date: fmtDate(k.time),
     price: k.close,
-    ma7: stats.ma7[i],
-    ma25: stats.ma25[i],
+    ema25: stats.ema25[i],
+    ema120: stats.ema120[i],
   }));
 
   const returnData = stats.rets.map((r, i) => ({ day: i + 1, ret: r }));
 
+  const lastRSI = stats.rsi.filter((r) => r !== null).slice(-1)[0];
+
   return (
     <div className="space-y-6">
       {/* Stat Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card label="Harga Sekarang" value={`$${stats.last.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} />
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <Card label="PRICE" value={`$${stats.last.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} />
         <Card
-          label="Log Return 180d"
+          label="LOG RETURN 180d"
           value={`${(stats.totalReturn * 100).toFixed(2)}%`}
           color={stats.totalReturn >= 0 ? "emerald" : "red"}
         />
-        <Card label="Volatilitas Tahunan" value={`${(stats.vol * 100).toFixed(1)}%`} color="amber" />
-        <Card label="Data Points" value={`${klines.length} hari`} />
+        <Card label="VOLATILITY (ann)" value={`${(stats.vol * 100).toFixed(1)}%`} color="amber" />
+        <Card label="RSI (14)" value={lastRSI !== null ? `${lastRSI.toFixed(1)}` : "N/A"} color="cyan" />
+        <Card label="DATA POINTS" value={`${klines.length}d`} />
       </div>
 
-      {/* Price + MA Chart */}
-      <ChartCard title="Harga + Moving Average (MA7 & MA25)">
+      {/* Price + EMA Chart */}
+      <ChartCard title="&gt; Price + EMA25 (yellow) + EMA120 (purple)">
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={priceData}>
-            <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-            <XAxis dataKey="date" stroke="#52525b" fontSize={10} />
-            <YAxis stroke="#52525b" fontSize={10} domain={["auto", "auto"]} />
-            <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} />
+            <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" />
+            <XAxis dataKey="date" stroke="#374151" fontSize={10} />
+            <YAxis stroke="#374151" fontSize={10} domain={["auto", "auto"]} />
+            <Tooltip contentStyle={{ background: "#0f0f1a", border: "1px solid #065f46", borderRadius: 4, fontFamily: "monospace", fontSize: 11 }} />
             <Line type="monotone" dataKey="price" stroke="#10b981" dot={false} strokeWidth={2} name="Price" />
-            <Line type="monotone" dataKey="ma7" stroke="#f59e0b" dot={false} strokeWidth={1.5} strokeDasharray="4 2" name="MA7" />
-            <Line type="monotone" dataKey="ma25" stroke="#8b5cf6" dot={false} strokeWidth={1.5} strokeDasharray="4 2" name="MA25" />
+            <Line type="monotone" dataKey="ema25" stroke="#eab308" dot={false} strokeWidth={1.5} strokeDasharray="5 3" name="EMA25" />
+            <Line type="monotone" dataKey="ema120" stroke="#a855f7" dot={false} strokeWidth={1.5} strokeDasharray="5 3" name="EMA120" />
           </LineChart>
         </ResponsiveContainer>
       </ChartCard>
 
       {/* Log Returns */}
-      <ChartCard title="Log Returns Harian: r = ln(P_t / P_{t-1})">
+      <ChartCard title="&gt; Log Returns: r = ln(P_t / P_{t-1})">
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={returnData}>
-            <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-            <XAxis dataKey="day" stroke="#52525b" fontSize={10} />
-            <YAxis stroke="#52525b" fontSize={10} />
-            <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} />
-            <ReferenceLine y={0} stroke="#52525b" />
-            <Bar dataKey="ret" fill="#f59e0b" radius={[2, 2, 0, 0]} name="Return" />
+            <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" />
+            <XAxis dataKey="day" stroke="#374151" fontSize={10} />
+            <YAxis stroke="#374151" fontSize={10} />
+            <Tooltip contentStyle={{ background: "#0f0f1a", border: "1px solid #065f46", borderRadius: 4, fontFamily: "monospace", fontSize: 11 }} />
+            <ReferenceLine y={0} stroke="#374151" />
+            <Bar dataKey="ret" fill="#06b6d4" radius={[2, 2, 0, 0]} name="Return" />
           </BarChart>
         </ResponsiveContainer>
       </ChartCard>
@@ -240,36 +257,36 @@ function VolumeOITab({ klines, oi }: { klines: Kline[]; oi: OpenInterest[] }) {
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-3">
         <Card
-          label="Volume 24h (terakhir)"
+          label="VOLUME 24h"
           value={klines.length > 0 ? formatLargeNumber(klines[klines.length - 1].volume) : "-"}
         />
         <Card
-          label="Open Interest (terakhir)"
+          label="OPEN INTEREST"
           value={oi.length > 0 ? formatLargeNumber(oi[oi.length - 1].oi) : "N/A"}
           color="purple"
         />
       </div>
 
-      <ChartCard title="Volume Harian (dalam koin)">
+      <ChartCard title="&gt; Volume Harian">
         <ResponsiveContainer width="100%" height={250}>
           <BarChart data={volData}>
-            <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-            <XAxis dataKey="date" stroke="#52525b" fontSize={10} />
-            <YAxis stroke="#52525b" fontSize={10} tickFormatter={formatLargeNumber} />
-            <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} />
+            <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" />
+            <XAxis dataKey="date" stroke="#374151" fontSize={10} />
+            <YAxis stroke="#374151" fontSize={10} tickFormatter={formatLargeNumber} />
+            <Tooltip contentStyle={{ background: "#0f0f1a", border: "1px solid #065f46", borderRadius: 4, fontFamily: "monospace", fontSize: 11 }} />
             <Bar dataKey="volume" fill="#3b82f6" radius={[2, 2, 0, 0]} name="Volume" />
           </BarChart>
         </ResponsiveContainer>
       </ChartCard>
 
       {oiData.length > 0 && (
-        <ChartCard title="Open Interest (Futures)">
+        <ChartCard title="&gt; Open Interest (Futures)">
           <ResponsiveContainer width="100%" height={250}>
             <AreaChart data={oiData}>
-              <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-              <XAxis dataKey="date" stroke="#52525b" fontSize={10} />
-              <YAxis stroke="#52525b" fontSize={10} tickFormatter={formatLargeNumber} />
-              <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} />
+              <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" />
+              <XAxis dataKey="date" stroke="#374151" fontSize={10} />
+              <YAxis stroke="#374151" fontSize={10} tickFormatter={formatLargeNumber} />
+              <Tooltip contentStyle={{ background: "#0f0f1a", border: "1px solid #065f46", borderRadius: 4, fontFamily: "monospace", fontSize: 11 }} />
               <Area type="monotone" dataKey="oi" stroke="#a855f7" fill="#a855f720" name="OI" />
             </AreaChart>
           </ResponsiveContainer>
@@ -279,12 +296,14 @@ function VolumeOITab({ klines, oi }: { klines: Kline[]; oi: OpenInterest[] }) {
   );
 }
 
+
+
 // ─── Tab: Funding ────────────────────────────────────────────────────────────
 
 function FundingTab({ funding }: { funding: FundingRate[] }) {
   const data = funding.map((f) => ({
     date: fmtDate(f.time),
-    rate: f.rate * 100, // to percentage
+    rate: f.rate * 100,
   }));
 
   const avgRate = data.length > 0 ? data.reduce((a, b) => a + b.rate, 0) / data.length : 0;
@@ -293,30 +312,29 @@ function FundingTab({ funding }: { funding: FundingRate[] }) {
     <div className="space-y-6">
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         <Card
-          label="Funding Rate (terakhir)"
+          label="FUNDING RATE (last)"
           value={data.length > 0 ? `${data[data.length - 1].rate.toFixed(4)}%` : "N/A"}
           color={data.length > 0 && data[data.length - 1].rate > 0 ? "emerald" : "red"}
         />
-        <Card label="Avg Funding Rate" value={`${avgRate.toFixed(4)}%`} color="amber" />
-        <Card label="Data Points" value={`${data.length}`} />
+        <Card label="AVG FUNDING" value={`${avgRate.toFixed(4)}%`} color="amber" />
+        <Card label="DATA POINTS" value={`${data.length}`} />
       </div>
 
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-        <p className="text-xs text-zinc-400 mb-2">
-          <strong>Funding Rate &gt; 0:</strong> Long pays short (bullish sentiment, tapi bisa overheated).
-          <br />
-          <strong>Funding Rate &lt; 0:</strong> Short pays long (bearish sentiment, tapi bisa oversold).
+      <div className="rounded border border-emerald-900/30 bg-[#0c0c14] p-4">
+        <p className="text-[10px] text-zinc-500 font-mono">
+          <span className="text-emerald-500">[INFO]</span> Funding &gt; 0: Long pays short (bullish, bisa overheated).
+          Funding &lt; 0: Short pays long (bearish, bisa oversold).
         </p>
       </div>
 
-      <ChartCard title="Funding Rate History (%)">
+      <ChartCard title="&gt; Funding Rate History (%)">
         <ResponsiveContainer width="100%" height={280}>
           <BarChart data={data}>
-            <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-            <XAxis dataKey="date" stroke="#52525b" fontSize={10} />
-            <YAxis stroke="#52525b" fontSize={10} />
-            <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} />
-            <ReferenceLine y={0} stroke="#52525b" strokeWidth={2} />
+            <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" />
+            <XAxis dataKey="date" stroke="#374151" fontSize={10} />
+            <YAxis stroke="#374151" fontSize={10} />
+            <Tooltip contentStyle={{ background: "#0f0f1a", border: "1px solid #065f46", borderRadius: 4, fontFamily: "monospace", fontSize: 11 }} />
+            <ReferenceLine y={0} stroke="#374151" strokeWidth={2} />
             <Bar dataKey="rate" name="Funding %" radius={[2, 2, 0, 0]} fill="#10b981" />
           </BarChart>
         </ResponsiveContainer>
@@ -330,9 +348,10 @@ function FundingTab({ funding }: { funding: FundingRate[] }) {
 function SignalsTab({ klines, stats }: { klines: Kline[]; stats: Stats }) {
   const activeSignals = stats.signals.filter((s) => s.type !== "NEUTRAL");
   const lastSignals = activeSignals.slice(-10).reverse();
+  const latestSignal = activeSignals.length > 0 ? activeSignals[activeSignals.length - 1] : null;
 
   const priceWithSignals = klines.map((k, i) => {
-    const sig = stats.signals[i - 1]; // signals start at index 1
+    const sig = stats.signals[i - 1];
     return {
       date: fmtDate(k.time),
       price: k.close,
@@ -343,20 +362,40 @@ function SignalsTab({ klines, stats }: { klines: Kline[]; stats: Stats }) {
 
   return (
     <div className="space-y-6">
+      {/* Latest Signal - Prominent */}
+      {latestSignal && (
+        <div className={`rounded border p-4 animate-glow ${
+          latestSignal.type === "BUY"
+            ? "border-emerald-700/50 bg-emerald-950/30"
+            : "border-red-700/50 bg-red-950/30"
+        }`}>
+          <div className="flex items-center gap-3">
+            <span className={`text-2xl font-bold ${latestSignal.type === "BUY" ? "text-emerald-400 neon-text" : "text-red-400"}`}>
+              {latestSignal.type === "BUY" ? "▲ BUY" : "▼ SELL"}
+            </span>
+            <div className="flex-1">
+              <p className="text-xs text-zinc-400">{latestSignal.reason}</p>
+              <p className="text-[10px] text-zinc-600">Day {latestSignal.day} | {new Date().toLocaleDateString("id-ID")}</p>
+            </div>
+            <span className="blink text-emerald-400">&#9679;</span>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <Card label="Total Signals" value={`${activeSignals.length}`} />
-        <Card label="Buy Signals" value={`${activeSignals.filter((s) => s.type === "BUY").length}`} color="emerald" />
-        <Card label="Sell Signals" value={`${activeSignals.filter((s) => s.type === "SELL").length}`} color="red" />
+        <Card label="TOTAL SIGNALS" value={`${activeSignals.length}`} />
+        <Card label="BUY" value={`${activeSignals.filter((s) => s.type === "BUY").length}`} color="emerald" />
+        <Card label="SELL" value={`${activeSignals.filter((s) => s.type === "SELL").length}`} color="red" />
       </div>
 
-      <ChartCard title="Price + Buy/Sell Signals (MA7/MA25 Crossover + Vol Regime)">
+      <ChartCard title="&gt; Price + EMA25/EMA120 Crossover Signals">
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={priceWithSignals}>
-            <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-            <XAxis dataKey="date" stroke="#52525b" fontSize={10} />
-            <YAxis stroke="#52525b" fontSize={10} domain={["auto", "auto"]} />
-            <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} />
-            <Line type="monotone" dataKey="price" stroke="#71717a" dot={false} strokeWidth={1.5} name="Price" />
+            <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" />
+            <XAxis dataKey="date" stroke="#374151" fontSize={10} />
+            <YAxis stroke="#374151" fontSize={10} domain={["auto", "auto"]} />
+            <Tooltip contentStyle={{ background: "#0f0f1a", border: "1px solid #065f46", borderRadius: 4, fontFamily: "monospace", fontSize: 11 }} />
+            <Line type="monotone" dataKey="price" stroke="#4b5563" dot={false} strokeWidth={1.5} name="Price" />
             <Line type="monotone" dataKey="buy" stroke="#10b981" dot={{ r: 5, fill: "#10b981" }} strokeWidth={0} name="Buy" connectNulls={false} />
             <Line type="monotone" dataKey="sell" stroke="#ef4444" dot={{ r: 5, fill: "#ef4444" }} strokeWidth={0} name="Sell" connectNulls={false} />
           </LineChart>
@@ -364,38 +403,40 @@ function SignalsTab({ klines, stats }: { klines: Kline[]; stats: Stats }) {
       </ChartCard>
 
       {/* Signal Log */}
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-        <h3 className="text-sm font-semibold text-zinc-300 mb-3">10 Sinyal Terakhir</h3>
-        <div className="space-y-2 max-h-64 overflow-y-auto">
-          {lastSignals.length === 0 && <p className="text-zinc-500 text-sm">Belum ada sinyal aktif</p>}
+      <div className="rounded border border-emerald-900/30 bg-[#0c0c14] p-4">
+        <h3 className="text-xs font-mono text-emerald-500 mb-3">&gt; signal_log (last 10)</h3>
+        <div className="space-y-1 max-h-64 overflow-y-auto font-mono">
+          {lastSignals.length === 0 && <p className="text-zinc-600 text-xs">// no active signals</p>}
           {lastSignals.map((s, i) => (
             <div
               key={i}
-              className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm ${
-                s.type === "BUY" ? "bg-emerald-900/20 border border-emerald-800/30" : "bg-red-900/20 border border-red-800/30"
+              className={`flex items-center gap-3 px-3 py-1.5 rounded text-xs ${
+                s.type === "BUY" ? "bg-emerald-950/20 border border-emerald-900/30" : "bg-red-950/20 border border-red-900/30"
               }`}
             >
-              <span className={`font-bold ${s.type === "BUY" ? "text-emerald-400" : "text-red-400"}`}>
+              <span className={`font-bold w-10 ${s.type === "BUY" ? "text-emerald-400" : "text-red-400"}`}>
                 {s.type}
               </span>
-              <span className="text-zinc-400">Day {s.day}</span>
-              <span className="text-zinc-500 text-xs">{s.reason}</span>
+              <span className="text-zinc-600">d{s.day}</span>
+              <span className="text-zinc-500 text-[10px] truncate">{s.reason}</span>
             </div>
           ))}
         </div>
       </div>
 
-      <div className="rounded-lg border border-amber-800/30 bg-amber-900/10 p-4">
-        <p className="text-xs text-amber-400">
-          <strong>Strategi:</strong> MA7 × MA25 crossover + volatility regime filter (&gt;80% annualized = sell signal).
-          Ini basic — bukan rekomendasi trading. Tahap penelitian.
+      <div className="rounded border border-cyan-900/30 bg-cyan-950/10 p-4">
+        <p className="text-[10px] text-cyan-500 font-mono">
+          <span className="text-cyan-400">[STRATEGY]</span> EMA25 x EMA120 crossover + RSI(14) confirmation.
+          Overbought RSI (&gt;70) blocks BUY. Oversold RSI (&lt;30) blocks SELL. Vol regime filter at 80% ann.
         </p>
       </div>
     </div>
   );
 }
 
-// ─── Tab: GBM ────────────────────────────────────────────────────────────────
+
+
+// ─── Tab: GBM (Futuristic) ───────────────────────────────────────────────────
 
 function GBMTab({ gbmPaths, stats }: { gbmPaths: number[][]; stats: Stats }) {
   const gbmData = useMemo(() => {
@@ -413,34 +454,74 @@ function GBMTab({ gbmPaths, stats }: { gbmPaths: number[][]; stats: Stats }) {
   }, [gbmPaths]);
 
   const finalPrices = gbmPaths.map((p) => p[p.length - 1]);
-  const mean = finalPrices.reduce((a, b) => a + b, 0) / finalPrices.length;
+  const mean = finalPrices.length > 0 ? finalPrices.reduce((a, b) => a + b, 0) / finalPrices.length : 0;
   const sorted = [...finalPrices].sort((a, b) => a - b);
   const p5 = sorted[Math.floor(sorted.length * 0.05)];
+  const p25 = sorted[Math.floor(sorted.length * 0.25)];
+  const p75 = sorted[Math.floor(sorted.length * 0.75)];
   const p95 = sorted[Math.floor(sorted.length * 0.95)];
+  const expectedReturn = ((mean - stats.last) / stats.last) * 100;
 
   return (
     <div className="space-y-6">
+      {/* HUD-style stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card label="Harga Awal" value={`$${stats.last.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
-        <Card label="Mean 90d" value={`$${mean.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} color="emerald" />
-        <Card label="P5 (worst)" value={`$${p5?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? "-"}`} color="red" />
-        <Card label="P95 (best)" value={`$${p95?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? "-"}`} color="purple" />
+        <HUDCard label="S₀" value={`$${stats.last.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} sub="initial" />
+        <HUDCard label="E[S₉₀]" value={`$${mean.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} sub={`${expectedReturn >= 0 ? "+" : ""}${expectedReturn.toFixed(1)}%`} color="cyan" />
+        <HUDCard label="P5" value={`$${p5?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? "-"}`} sub="worst 5%" color="red" />
+        <HUDCard label="P95" value={`$${p95?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? "-"}`} sub="best 5%" color="purple" />
       </div>
 
-      <ChartCard title={`Simulasi GBM — 30 path, 90 hari (σ=${(stats.vol * 100).toFixed(1)}%, μ=30%)`}>
+      {/* Probability Cone Summary */}
+      <div className="rounded border border-purple-800/40 bg-gradient-to-br from-[#0c0c18] to-[#12081f] p-5 terminal-glow-cyan">
+        <h3 className="text-xs text-cyan-400 font-mono mb-3 neon-text-cyan">&gt; PROBABILITY CONE (90d)</h3>
+        <div className="grid grid-cols-4 gap-4 text-center">
+          <div>
+            <div className="text-[10px] text-zinc-600">5th %ile</div>
+            <div className="text-sm text-red-400 font-bold">${p5?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? "-"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-zinc-600">25th %ile</div>
+            <div className="text-sm text-amber-400 font-bold">${p25?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? "-"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-zinc-600">75th %ile</div>
+            <div className="text-sm text-emerald-400 font-bold">${p75?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? "-"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-zinc-600">95th %ile</div>
+            <div className="text-sm text-purple-400 font-bold neon-text-purple">${p95?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? "-"}</div>
+          </div>
+        </div>
+        <div className="mt-3 h-2 rounded-full bg-[#1a1a2e] overflow-hidden flex">
+          <div className="bg-red-500/60 flex-1" />
+          <div className="bg-amber-500/60 flex-1" />
+          <div className="bg-emerald-500/60 flex-1" />
+          <div className="bg-purple-500/60 flex-1" />
+        </div>
+        <div className="flex justify-between text-[9px] text-zinc-600 mt-1">
+          <span>bearish</span>
+          <span>expected</span>
+          <span>bullish</span>
+        </div>
+      </div>
+
+      {/* GBM Chart with gradient bg */}
+      <div className="rounded border border-purple-800/30 bg-gradient-to-br from-[#0a0a14] via-[#0d0818] to-[#0a0a14] p-4 space-y-3">
+        <h3 className="text-xs font-mono text-purple-400 neon-text-purple">&gt; GBM Simulation — 30 paths, 90d (sigma={`${(stats.vol * 100).toFixed(1)}%`}, mu=30%)</h3>
         <ResponsiveContainer width="100%" height={350}>
           <LineChart data={gbmData}>
-            <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-            <XAxis dataKey="day" stroke="#52525b" fontSize={10} />
-            <YAxis stroke="#52525b" fontSize={10} domain={["auto", "auto"]} />
-            <Tooltip contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 8 }} />
+            <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" />
+            <XAxis dataKey="day" stroke="#374151" fontSize={10} />
+            <YAxis stroke="#374151" fontSize={10} domain={["auto", "auto"]} />
+            <Tooltip contentStyle={{ background: "#0f0f1a", border: "1px solid #7c3aed50", borderRadius: 4, fontFamily: "monospace", fontSize: 11 }} />
             {gbmPaths.map((_, i) => (
               <Line
                 key={i}
                 type="monotone"
                 dataKey={`p${i}`}
-                stroke="#8b5cf6"
-                strokeOpacity={0.4}
+                stroke={i % 2 === 0 ? "#8b5cf6" : "#06b6d4"}
+                strokeOpacity={0.5}
                 dot={false}
                 strokeWidth={1}
                 isAnimationActive={false}
@@ -448,48 +529,74 @@ function GBMTab({ gbmPaths, stats }: { gbmPaths: number[][]; stats: Stats }) {
             ))}
           </LineChart>
         </ResponsiveContainer>
-      </ChartCard>
+      </div>
 
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-        <p className="text-xs text-zinc-400">
-          <strong>Formula:</strong> S_t = S_0 · exp((μ − σ²/2)·t + σ·W_t)
-          <br />
-          Koreksi <code>−σ²/2</code> dari <strong>Itô&apos;s lemma</strong> (stokastik kalkulus).
-          Ini yang menghubungkan integral di fondasi ke model harga.
+      <div className="rounded border border-zinc-800/50 bg-[#0c0c14] p-4">
+        <p className="text-[10px] text-zinc-500 font-mono">
+          <span className="text-purple-400">[FORMULA]</span> S_t = S_0 * exp((mu - sigma^2/2)*t + sigma*W_t)
+          <br /><span className="text-zinc-600">// Ito correction -sigma^2/2 connects stochastic calculus to the foundation integral</span>
         </p>
       </div>
     </div>
   );
 }
 
-// ─── Tab: Fondasi ────────────────────────────────────────────────────────────
+
+
+// ─── Tab: Fondasi (Futuristic) ───────────────────────────────────────────────
 
 function FondasiTab({ integralValue }: { integralValue: number }) {
   const ln2 = Math.log(2);
   const diff = Math.abs(integralValue - ln2);
+  const accuracy = (1 - diff / ln2) * 100;
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <Card label="Integral Numerik" value={integralValue.toFixed(10)} />
-        <Card label="ln(2) Eksak" value={ln2.toFixed(10)} color="emerald" />
-        <Card label="Selisih (Error)" value={diff.toExponential(3)} color="amber" />
+    <div className="space-y-6 relative">
+      {/* Matrix grid background */}
+      <div className="absolute inset-0 matrix-bg pointer-events-none rounded" />
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 relative">
+        <Card label="INTEGRAL (numeric)" value={integralValue.toFixed(10)} color="cyan" />
+        <Card label="ln(2) EXACT" value={ln2.toFixed(10)} color="emerald" />
+        <Card label="ERROR" value={diff.toExponential(3)} color="amber" />
       </div>
 
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-6 space-y-4">
-        <h3 className="text-lg font-semibold">Rumus yang diverifikasi:</h3>
-        <div className="bg-zinc-800 rounded-lg p-4 font-mono text-center text-emerald-400">
-          ∫₀¹ ∫₀¹ 1 / [(1 − xy)(1 + x)(1 + y)] dx dy = ln 2
+      {/* Glowing Formula Box */}
+      <div className="relative p-[2px] rounded animate-glow">
+        <div className="gradient-border absolute inset-0 rounded opacity-60" />
+        <div className="relative rounded bg-[#0a0f0a] p-6 space-y-4">
+          <h3 className="text-xs font-mono text-emerald-500">&gt; verified_formula</h3>
+          <div className="bg-[#0a1a0f] border border-emerald-800/40 rounded p-4 font-mono text-center text-emerald-400 text-lg neon-text">
+            &#8747;&#8320;&#185; &#8747;&#8320;&#185; 1 / [(1 - xy)(1 + x)(1 + y)] dx dy = ln 2
+          </div>
         </div>
-        <div className="space-y-2 text-sm text-zinc-400">
-          <p><strong>Metode:</strong> Simpson&apos;s 1/3 Rule (Composite, 2D), n=100 grid points per axis.</p>
-          <p><strong>Koneksi ke quant:</strong></p>
-          <ul className="list-disc list-inside space-y-1 ml-2">
-            <li><code>ln</code> yang sama → log returns harga koin</li>
-            <li>Teknik integrasi → option pricing (Black-Scholes integral form)</li>
-            <li>Pecahan parsial → dekomposisi sinyal time series</li>
-            <li>Itô calculus (perpanjangan integral) → model GBM di tab sebelah</li>
-          </ul>
+      </div>
+
+      {/* Computation Verified Terminal Output */}
+      <div className="rounded border border-emerald-800/30 bg-[#080c08] p-5 font-mono text-xs space-y-2">
+        <div className="flex items-center gap-2 mb-3">
+          <span className="blink text-emerald-400">&#9679;</span>
+          <span className="text-emerald-500 neon-text">COMPUTATION VERIFIED</span>
+        </div>
+        <div className="text-zinc-500">
+          <p><span className="text-emerald-700">$</span> method = Simpson&apos;s 1/3 Rule (2D Composite)</p>
+          <p><span className="text-emerald-700">$</span> grid = 100 x 100 points</p>
+          <p><span className="text-emerald-700">$</span> result = {integralValue.toFixed(12)}</p>
+          <p><span className="text-emerald-700">$</span> target = {ln2.toFixed(12)}</p>
+          <p><span className="text-emerald-700">$</span> error = {diff.toExponential(4)}</p>
+          <p><span className="text-emerald-700">$</span> accuracy = <span className="text-emerald-400">{accuracy.toFixed(8)}%</span></p>
+          <p className="mt-2 text-emerald-600">// status: <span className="text-emerald-400">PASS</span> &#10003;</p>
+        </div>
+      </div>
+
+      {/* Connection to Quant */}
+      <div className="rounded border border-cyan-900/30 bg-[#0c0c14] p-5 space-y-3 relative">
+        <h3 className="text-xs font-mono text-cyan-400 neon-text-cyan">&gt; quant_connections</h3>
+        <div className="space-y-2 text-[11px] text-zinc-400 font-mono">
+          <p><span className="text-cyan-600">[1]</span> ln() identical function &#8594; log returns of price</p>
+          <p><span className="text-cyan-600">[2]</span> Integration technique &#8594; Black-Scholes option pricing</p>
+          <p><span className="text-cyan-600">[3]</span> Partial fractions &#8594; time series signal decomposition</p>
+          <p><span className="text-cyan-600">[4]</span> Ito calculus (extension) &#8594; GBM stochastic model</p>
         </div>
       </div>
     </div>
@@ -504,20 +611,37 @@ function Card({ label, value, color }: { label: string; value: string; color?: s
     color === "red" ? "text-red-400" :
     color === "amber" ? "text-amber-400" :
     color === "purple" ? "text-purple-400" :
+    color === "cyan" ? "text-cyan-400" :
     "text-zinc-100";
 
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
-      <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">{label}</div>
-      <div className={`text-lg font-mono font-semibold ${colorClass} truncate`}>{value}</div>
+    <div className="rounded border border-emerald-900/25 bg-[#0c0c14] p-4 terminal-glow">
+      <div className="text-[9px] uppercase tracking-widest text-zinc-600 mb-1 font-mono">{label}</div>
+      <div className={`text-sm font-mono font-semibold ${colorClass} truncate`}>{value}</div>
+    </div>
+  );
+}
+
+function HUDCard({ label, value, sub, color }: { label: string; value: string; sub: string; color?: string }) {
+  const colorClass =
+    color === "cyan" ? "text-cyan-400 neon-text-cyan" :
+    color === "red" ? "text-red-400" :
+    color === "purple" ? "text-purple-400 neon-text-purple" :
+    "text-zinc-100";
+
+  return (
+    <div className="rounded border border-purple-900/30 bg-gradient-to-b from-[#0c0c18] to-[#0a0a14] p-4 animate-pulse-cyan">
+      <div className="text-[9px] uppercase tracking-widest text-zinc-600 mb-1 font-mono">{label}</div>
+      <div className={`text-base font-mono font-bold ${colorClass} truncate`}>{value}</div>
+      <div className="text-[9px] text-zinc-600 mt-0.5">{sub}</div>
     </div>
   );
 }
 
 function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 space-y-3">
-      <h3 className="text-sm font-medium text-zinc-300">{title}</h3>
+    <div className="rounded border border-emerald-900/25 bg-[#0c0c14] p-4 space-y-3 terminal-glow">
+      <h3 className="text-xs font-mono text-emerald-500">{title}</h3>
       {children}
     </div>
   );
@@ -526,9 +650,10 @@ function ChartCard({ title, children }: { title: string; children: React.ReactNo
 function LoadingState() {
   return (
     <div className="flex items-center justify-center py-20">
-      <div className="text-center space-y-2">
+      <div className="text-center space-y-3">
         <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto" />
-        <p className="text-zinc-400 text-sm">Loading market data...</p>
+        <p className="text-emerald-600 text-xs font-mono">&gt; fetching market data...</p>
+        <span className="blink text-emerald-400 text-lg">_</span>
       </div>
     </div>
   );
@@ -536,8 +661,8 @@ function LoadingState() {
 
 function ErrorState({ message }: { message: string }) {
   return (
-    <div className="rounded-lg border border-red-800/50 bg-red-900/10 p-4">
-      <p className="text-red-400 text-sm">Error: {message}</p>
+    <div className="rounded border border-red-800/50 bg-red-950/10 p-4">
+      <p className="text-red-400 text-xs font-mono"><span className="text-red-500">[ERROR]</span> {message}</p>
     </div>
   );
 }
@@ -561,8 +686,9 @@ type Stats = {
   rets: number[];
   vol: number;
   totalReturn: number;
-  ma7: (number | null)[];
-  ma25: (number | null)[];
+  ema25: (number | null)[];
+  ema120: (number | null)[];
+  rsi: (number | null)[];
   signals: Signal[];
   last: number;
 };

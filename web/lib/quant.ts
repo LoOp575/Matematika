@@ -1,6 +1,6 @@
 /**
  * Quant math primitives — versi browser dari script Python kita.
- * Includes: market data fetching, log returns, volatility, GBM, signals, integral verification.
+ * Includes: market data fetching, log returns, volatility, EMA, RSI, GBM, signals, integral verification.
  */
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ export function annualizedVolatility(
   return stdev(returns) * Math.sqrt(periodsPerYear);
 }
 
-/** Simple Moving Average. */
+/** Simple Moving Average (kept for backward compat). */
 export function sma(prices: number[], period: number): (number | null)[] {
   const result: (number | null)[] = [];
   for (let i = 0; i < prices.length; i++) {
@@ -132,38 +132,121 @@ export function sma(prices: number[], period: number): (number | null)[] {
   return result;
 }
 
-/** Generate trading signals berdasarkan MA crossover + volatility regime. */
+/** Exponential Moving Average. */
+export function ema(prices: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  const multiplier = 2 / (period + 1);
+
+  for (let i = 0; i < prices.length; i++) {
+    if (i < period - 1) {
+      result.push(null);
+    } else if (i === period - 1) {
+      // seed with SMA for the first value
+      const slice = prices.slice(0, period);
+      const seed = slice.reduce((a, b) => a + b, 0) / period;
+      result.push(seed);
+    } else {
+      const prev = result[i - 1];
+      if (prev === null) {
+        result.push(null);
+      } else {
+        result.push((prices[i] - prev) * multiplier + prev);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * RSI (Relative Strength Index) — 14-period default.
+ * Returns array same length as prices (first `period` entries are null).
+ */
+export function rsi(prices: number[], period = 14): (number | null)[] {
+  const result: (number | null)[] = [];
+
+  if (prices.length < period + 1) {
+    return prices.map(() => null);
+  }
+
+  // Calculate gains and losses
+  const gains: number[] = [];
+  const losses: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    const change = prices[i] - prices[i - 1];
+    gains.push(change > 0 ? change : 0);
+    losses.push(change < 0 ? -change : 0);
+  }
+
+  // First value uses SMA of gains/losses
+  let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+  // Fill nulls for insufficient data
+  for (let i = 0; i <= period; i++) {
+    result.push(null);
+  }
+
+  // First RSI value
+  const firstRS = avgLoss === 0 ? 100 : avgGain / avgLoss;
+  result.push(100 - 100 / (1 + firstRS));
+
+  // Subsequent values use smoothed averages
+  for (let i = period + 1; i < gains.length; i++) {
+    avgGain = (avgGain * (period - 1) + gains[i]) / period;
+    avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    result.push(100 - 100 / (1 + rs));
+  }
+
+  return result;
+}
+
+/** Generate trading signals based on EMA25/EMA120 crossover + RSI confirmation. */
 export function generateSignals(
   prices: number[],
-  shortPeriod = 7,
-  longPeriod = 25
+  shortPeriod = 25,
+  longPeriod = 120
 ): Signal[] {
-  const shortMA = sma(prices, shortPeriod);
-  const longMA = sma(prices, longPeriod);
+  const shortEMA = ema(prices, shortPeriod);
+  const longEMA = ema(prices, longPeriod);
+  const rsiValues = rsi(prices, 14);
   const rets = logReturns(prices);
   const signals: Signal[] = [];
 
   for (let i = 1; i < prices.length; i++) {
-    const s = shortMA[i];
-    const l = longMA[i];
-    const sPrev = shortMA[i - 1];
-    const lPrev = longMA[i - 1];
+    const s = shortEMA[i];
+    const l = longEMA[i];
+    const sPrev = shortEMA[i - 1];
+    const lPrev = longEMA[i - 1];
+    const currentRSI = rsiValues[i];
 
     if (s === null || l === null || sPrev === null || lPrev === null) {
       signals.push({ day: i, type: "NEUTRAL", reason: "Insufficient data" });
       continue;
     }
 
-    // MA crossover
+    // EMA crossover with RSI confirmation
     if (sPrev <= lPrev && s > l) {
-      signals.push({ day: i, type: "BUY", reason: `MA${shortPeriod} crosses above MA${longPeriod}` });
+      const rsiNote = currentRSI !== null ? ` (RSI: ${currentRSI.toFixed(0)})` : "";
+      if (currentRSI !== null && currentRSI > 70) {
+        signals.push({ day: i, type: "NEUTRAL", reason: `EMA25 > EMA120 but RSI overbought${rsiNote}` });
+      } else {
+        signals.push({ day: i, type: "BUY", reason: `EMA25 crosses above EMA120${rsiNote}` });
+      }
     } else if (sPrev >= lPrev && s < l) {
-      signals.push({ day: i, type: "SELL", reason: `MA${shortPeriod} crosses below MA${longPeriod}` });
+      const rsiNote = currentRSI !== null ? ` (RSI: ${currentRSI.toFixed(0)})` : "";
+      if (currentRSI !== null && currentRSI < 30) {
+        signals.push({ day: i, type: "NEUTRAL", reason: `EMA25 < EMA120 but RSI oversold${rsiNote}` });
+      } else {
+        signals.push({ day: i, type: "SELL", reason: `EMA25 crosses below EMA120${rsiNote}` });
+      }
     } else {
       // Volatility regime check
       const recentVol = i >= 15 ? stdev(rets.slice(Math.max(0, i - 15), i)) * Math.sqrt(365) : 0;
-      if (recentVol > 0.8) {
-        signals.push({ day: i, type: "SELL", reason: `High volatility regime (${(recentVol * 100).toFixed(0)}% ann.)` });
+      if (recentVol > 0.8 && currentRSI !== null && currentRSI > 75) {
+        signals.push({ day: i, type: "SELL", reason: `High vol + RSI overbought (${(recentVol * 100).toFixed(0)}% ann, RSI ${currentRSI.toFixed(0)})` });
+      } else if (currentRSI !== null && currentRSI < 25) {
+        signals.push({ day: i, type: "BUY", reason: `RSI extreme oversold (${currentRSI.toFixed(0)})` });
       } else {
         signals.push({ day: i, type: "NEUTRAL", reason: "" });
       }
@@ -216,7 +299,7 @@ function gaussianRandom(): number {
 
 /**
  * Verifikasi numerik integral ganda = ln(2) pakai Simpson's 1/3 Rule (2D).
- * ∫₀¹ ∫₀¹ 1 / [(1 - xy)(1 + x)(1 + y)] dx dy
+ * int_0^1 int_0^1 1 / [(1 - xy)(1 + x)(1 + y)] dx dy
  *
  * n HARUS genap (Simpson's rule requirement).
  */
