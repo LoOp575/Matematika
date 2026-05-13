@@ -334,3 +334,320 @@ export function verifyDoubleIntegral(n = 100): number {
 
   return (sum * h * h) / 9;
 }
+
+
+// ─── Forecast (Human-Readable GBM Output) ────────────────────────────────────
+
+/** Forecast horizons in days */
+export type Horizon = 7 | 30 | 90;
+
+export type Forecast = {
+  horizon: Horizon;
+  current: number;
+  median: number; // 50th percentile
+  p10: number; // bearish scenario
+  p90: number; // bullish scenario
+  probUp: number; // probability price > current (0-1)
+  probUp10pct: number; // probability price > current * 1.10
+  probDown10pct: number; // probability price < current * 0.90
+  expectedReturn: number; // (median - current) / current
+};
+
+/** Pick percentile from a sorted ascending array. */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.floor(p * (sorted.length - 1)))
+  );
+  return sorted[idx];
+}
+
+/**
+ * Run Monte Carlo GBM and compute human-readable forecast statistics
+ * for a specific horizon. Use sigma from realized volatility, mu from
+ * recent log-return drift annualized. Returns a Forecast describing
+ * the distribution of terminal prices.
+ */
+export function computeForecast(
+  prices: number[],
+  horizon: Horizon,
+  paths = 5000
+): Forecast {
+  const current = prices.length > 0 ? prices[prices.length - 1] : 0;
+
+  // Empty / degenerate input → return neutral forecast.
+  if (prices.length < 2 || current <= 0) {
+    return {
+      horizon,
+      current,
+      median: current,
+      p10: current,
+      p90: current,
+      probUp: 0.5,
+      probUp10pct: 0,
+      probDown10pct: 0,
+      expectedReturn: 0,
+    };
+  }
+
+  const rets = logReturns(prices);
+
+  // Annualised drift from recent (last 60d) mean log return; clamp to
+  // a sane range so a noisy lookback can't blow up the cone.
+  const lookback = Math.min(60, rets.length);
+  const recent = rets.slice(-lookback);
+  const meanDaily = recent.reduce((a, b) => a + b, 0) / recent.length;
+  const muAnnualRaw = meanDaily * 365;
+  const muAnnual = Math.max(-1.5, Math.min(1.5, muAnnualRaw));
+
+  const sigmaAnnual = annualizedVolatility(rets);
+
+  // Run Monte Carlo and collect terminal prices.
+  const sims = simulateGBM({
+    s0: current,
+    mu: muAnnual,
+    sigma: sigmaAnnual,
+    days: horizon,
+    paths,
+  });
+  const terminals: number[] = sims.map((p) => p[p.length - 1]);
+  const sorted = [...terminals].sort((a, b) => a - b);
+
+  const median = percentile(sorted, 0.5);
+  const p10 = percentile(sorted, 0.1);
+  const p90 = percentile(sorted, 0.9);
+
+  let upCount = 0;
+  let up10Count = 0;
+  let down10Count = 0;
+  for (const t of terminals) {
+    if (t > current) upCount++;
+    if (t > current * 1.1) up10Count++;
+    if (t < current * 0.9) down10Count++;
+  }
+
+  return {
+    horizon,
+    current,
+    median,
+    p10,
+    p90,
+    probUp: upCount / terminals.length,
+    probUp10pct: up10Count / terminals.length,
+    probDown10pct: down10Count / terminals.length,
+    expectedReturn: (median - current) / current,
+  };
+}
+
+// ─── Composite Signal (Human-Readable) ───────────────────────────────────────
+
+export type CompositeReason = {
+  factor: string;
+  impact: number; // signed contribution to score (centered at 0)
+  note: string; // plain Indonesian explanation
+};
+
+export type CompositeSignal = {
+  score: number; // 0-100, where 50 = neutral, >65 = BUY, <35 = SELL
+  action: "BUY" | "HOLD" | "SELL" | "STRONG_BUY" | "STRONG_SELL";
+  confidence: number; // 0-100
+  reasons: CompositeReason[];
+  summary: string; // plain Indonesian explanation
+};
+
+/** Map raw composite score (0-100) to action label. */
+function actionFromScore(score: number): CompositeSignal["action"] {
+  if (score >= 80) return "STRONG_BUY";
+  if (score >= 65) return "BUY";
+  if (score > 35) return "HOLD";
+  if (score > 20) return "SELL";
+  return "STRONG_SELL";
+}
+
+/**
+ * Composite signal combining EMA crossover, RSI, funding rate, and
+ * volatility regime into a single 0-100 score with plain-Indonesian
+ * reasoning. Designed to be human-readable, not financial advice.
+ */
+export function computeCompositeSignal(
+  prices: number[],
+  fundingRate: number | null
+): CompositeSignal {
+  const reasons: CompositeReason[] = [];
+
+  // Start neutral.
+  let score = 50;
+  let confidenceContrib = 0;
+
+  // ── EMA25 vs EMA120 (range: -30 .. +30) ─────────────────────────────────
+  const ema25Arr = ema(prices, 25);
+  const ema120Arr = ema(prices, 120);
+  const lastEma25 = ema25Arr[ema25Arr.length - 1];
+  const lastEma120 = ema120Arr[ema120Arr.length - 1];
+
+  if (lastEma25 !== null && lastEma120 !== null && lastEma120 > 0) {
+    const distancePct = ((lastEma25 - lastEma120) / lastEma120) * 100;
+    // Saturate at ±10% distance → ±30 pts.
+    const emaImpact = Math.max(-30, Math.min(30, distancePct * 3));
+    score += emaImpact;
+    confidenceContrib += Math.abs(emaImpact);
+
+    let note: string;
+    if (emaImpact > 15) {
+      note = `EMA25 ${distancePct.toFixed(1)}% di atas EMA120 → tren naik kuat`;
+    } else if (emaImpact > 3) {
+      note = `EMA25 sedikit di atas EMA120 (${distancePct.toFixed(1)}%) → tren naik mulai terbentuk`;
+    } else if (emaImpact > -3) {
+      note = `EMA25 ≈ EMA120 (${distancePct.toFixed(1)}%) → tren mendatar, belum jelas`;
+    } else if (emaImpact > -15) {
+      note = `EMA25 sedikit di bawah EMA120 (${distancePct.toFixed(1)}%) → tren turun mulai terbentuk`;
+    } else {
+      note = `EMA25 ${Math.abs(distancePct).toFixed(1)}% di bawah EMA120 → tren turun kuat`;
+    }
+    reasons.push({
+      factor: "EMA25 vs EMA120",
+      impact: emaImpact,
+      note,
+    });
+  } else {
+    reasons.push({
+      factor: "EMA25 vs EMA120",
+      impact: 0,
+      note: "Data EMA belum cukup → faktor diabaikan",
+    });
+  }
+
+  // ── RSI (range: -20 .. +20) ─────────────────────────────────────────────
+  const rsiArr = rsi(prices, 14);
+  const lastRSI = rsiArr[rsiArr.length - 1];
+
+  if (lastRSI !== null) {
+    let rsiImpact = 0;
+    let note = "";
+    if (lastRSI < 30) {
+      // Oversold: contrarian bullish
+      rsiImpact = ((30 - lastRSI) / 30) * 20; // up to +20
+      note = `RSI ${lastRSI.toFixed(0)} → oversold, peluang rebound`;
+    } else if (lastRSI > 70) {
+      // Overbought: contrarian bearish
+      rsiImpact = -(((lastRSI - 70) / 30) * 20); // down to -20
+      note = `RSI ${lastRSI.toFixed(0)} → overbought, hati-hati koreksi`;
+    } else if (lastRSI < 45) {
+      rsiImpact = ((45 - lastRSI) / 15) * 5; // mild bullish lean
+      note = `RSI ${lastRSI.toFixed(0)} → momentum melemah, mendekati oversold`;
+    } else if (lastRSI > 55) {
+      rsiImpact = -(((lastRSI - 55) / 15) * 5);
+      note = `RSI ${lastRSI.toFixed(0)} → momentum sehat, belum overbought`;
+    } else {
+      note = `RSI ${lastRSI.toFixed(0)} → netral, momentum seimbang`;
+    }
+    rsiImpact = Math.max(-20, Math.min(20, rsiImpact));
+    score += rsiImpact;
+    confidenceContrib += Math.abs(rsiImpact);
+    reasons.push({ factor: "RSI(14)", impact: rsiImpact, note });
+  } else {
+    reasons.push({
+      factor: "RSI(14)",
+      impact: 0,
+      note: "Data RSI belum cukup → faktor diabaikan",
+    });
+  }
+
+  // ── Funding Rate (range: -15 .. +15) ────────────────────────────────────
+  if (fundingRate !== null && Number.isFinite(fundingRate)) {
+    const fundPct = fundingRate * 100; // funding in %
+    // Typical neutral band ±0.01%. Beyond ±0.05% is extreme.
+    let fundImpact = 0;
+    let note = "";
+    if (fundPct > 0.05) {
+      fundImpact = -Math.min(15, ((fundPct - 0.05) / 0.05) * 15 + 5);
+      note = `Funding rate ${fundPct.toFixed(3)}% → posisi long terlalu crowded`;
+    } else if (fundPct > 0.02) {
+      fundImpact = -((fundPct - 0.02) / 0.03) * 5;
+      note = `Funding rate ${fundPct.toFixed(3)}% → bias long, sentimen sedikit panas`;
+    } else if (fundPct < -0.05) {
+      fundImpact = Math.min(15, ((-fundPct - 0.05) / 0.05) * 15 + 5);
+      note = `Funding rate ${fundPct.toFixed(3)}% → short crowded, peluang short squeeze`;
+    } else if (fundPct < -0.02) {
+      fundImpact = ((-fundPct - 0.02) / 0.03) * 5;
+      note = `Funding rate ${fundPct.toFixed(3)}% → bias short, sentimen agak takut`;
+    } else {
+      note = `Funding rate ${fundPct.toFixed(3)}% → sentimen netral, tidak crowded`;
+    }
+    fundImpact = Math.max(-15, Math.min(15, fundImpact));
+    score += fundImpact;
+    confidenceContrib += Math.abs(fundImpact);
+    reasons.push({ factor: "Funding rate", impact: fundImpact, note });
+  } else {
+    reasons.push({
+      factor: "Funding rate",
+      impact: 0,
+      note: "Funding rate tidak tersedia → faktor diabaikan",
+    });
+  }
+
+  // ── Volatility regime (range: -10 .. +10) ───────────────────────────────
+  if (prices.length >= 2) {
+    const rets = logReturns(prices);
+    const sigma = annualizedVolatility(rets);
+    const sigmaPct = sigma * 100;
+    let volImpact = 0;
+    let note = "";
+    if (sigmaPct > 100) {
+      volImpact = -10;
+      note = `Volatilitas ${sigmaPct.toFixed(0)}% (sangat tinggi) → siap-siap pergerakan ekstrem`;
+    } else if (sigmaPct > 70) {
+      volImpact = -((sigmaPct - 70) / 30) * 10;
+      note = `Volatilitas ${sigmaPct.toFixed(0)}% (tinggi) → siap-siap pergerakan besar`;
+    } else if (sigmaPct < 30) {
+      volImpact = 5;
+      note = `Volatilitas ${sigmaPct.toFixed(0)}% (rendah) → pasar tenang, breakout potensial`;
+    } else {
+      volImpact = 2;
+      note = `Volatilitas ${sigmaPct.toFixed(0)}% (normal) → kondisi pasar standar`;
+    }
+    volImpact = Math.max(-10, Math.min(10, volImpact));
+    score += volImpact;
+    confidenceContrib += Math.abs(volImpact) * 0.5;
+    reasons.push({ factor: "Volatility regime", impact: volImpact, note });
+  }
+
+  // Clamp final score.
+  score = Math.max(0, Math.min(100, score));
+
+  const action = actionFromScore(score);
+
+  // Confidence: how strongly factors agreed (max possible = 30+20+15+10*0.5 = 70).
+  const confidence = Math.max(
+    0,
+    Math.min(100, Math.round((confidenceContrib / 70) * 100))
+  );
+
+  // Plain-Indonesian summary.
+  let summary = "";
+  switch (action) {
+    case "STRONG_BUY":
+      summary =
+        "Sinyal bullish kuat: tren naik, momentum sehat, sentimen mendukung. Pertimbangkan akumulasi bertahap dengan position sizing terkontrol.";
+      break;
+    case "BUY":
+      summary =
+        "Tren bullish dengan konfirmasi momentum. Pertimbangkan entry dengan position sizing kecil, terutama jika volatilitas elevated.";
+      break;
+    case "HOLD":
+      summary =
+        "Sinyal campuran: tren belum jelas atau faktor saling meniadakan. Lebih baik wait & see, hindari posisi agresif.";
+      break;
+    case "SELL":
+      summary =
+        "Tren bearish dengan konfirmasi momentum. Kurangi eksposur, atau pertimbangkan hedging. Hindari membeli berdasarkan FOMO.";
+      break;
+    case "STRONG_SELL":
+      summary =
+        "Sinyal bearish kuat: tren turun, momentum lemah, sentimen overheated. Disiplin cut-loss dan jaga modal.";
+      break;
+  }
+
+  return { score, action, confidence, reasons, summary };
+}
