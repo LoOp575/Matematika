@@ -1,27 +1,96 @@
 /**
  * Quant math primitives — versi browser dari script Python kita.
+ * Includes: market data fetching, log returns, volatility, GBM, signals, integral verification.
  */
 
-export type Kline = { time: number; close: number };
+// ─── Types ───────────────────────────────────────────────────────────────────
 
-const BINANCE_API = "https://api.binance.com/api/v3/klines";
+export type Kline = {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
 
-/** Ambil candle harian dari Binance public API (no auth, CORS friendly). */
+export type FundingRate = {
+  time: number;
+  symbol: string;
+  rate: number;
+};
+
+export type OpenInterest = {
+  time: number;
+  oi: number;
+};
+
+export type Signal = {
+  day: number;
+  type: "BUY" | "SELL" | "NEUTRAL";
+  reason: string;
+};
+
+// ─── API Endpoints ───────────────────────────────────────────────────────────
+
+const SPOT_API = "https://api.binance.com/api/v3";
+const FUTURES_API = "https://fapi.binance.com/fapi/v1";
+
+// ─── Market Data ─────────────────────────────────────────────────────────────
+
+/** Ambil candle harian dari Binance Spot (OHLCV). */
 export async function fetchKlines(
   symbol = "BTCUSDT",
   interval = "1d",
   limit = 180
 ): Promise<Kline[]> {
-  const url = `${BINANCE_API}?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  const url = `${SPOT_API}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Binance API error: ${res.status}`);
+  if (!res.ok) throw new Error(`Binance Spot API error: ${res.status}`);
   const raw = (await res.json()) as unknown[][];
-  // Index 0 = openTime, index 4 = close
   return raw.map((row) => ({
     time: row[0] as number,
+    open: parseFloat(row[1] as string),
+    high: parseFloat(row[2] as string),
+    low: parseFloat(row[3] as string),
     close: parseFloat(row[4] as string),
+    volume: parseFloat(row[5] as string),
   }));
 }
+
+/** Ambil funding rate history dari Binance Futures. */
+export async function fetchFundingRate(
+  symbol = "BTCUSDT",
+  limit = 100
+): Promise<FundingRate[]> {
+  const url = `${FUTURES_API}/fundingRate?symbol=${symbol}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Binance Futures API error: ${res.status}`);
+  const raw = (await res.json()) as { fundingTime: number; symbol: string; fundingRate: string }[];
+  return raw.map((r) => ({
+    time: r.fundingTime,
+    symbol: r.symbol,
+    rate: parseFloat(r.fundingRate),
+  }));
+}
+
+/** Ambil Open Interest history dari Binance Futures. */
+export async function fetchOpenInterest(
+  symbol = "BTCUSDT",
+  period = "1d",
+  limit = 90
+): Promise<OpenInterest[]> {
+  const url = `${FUTURES_API}/openInterest/hist?symbol=${symbol}&period=${period}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Binance OI API error: ${res.status}`);
+  const raw = (await res.json()) as { timestamp: number; sumOpenInterest: string }[];
+  return raw.map((r) => ({
+    time: r.timestamp,
+    oi: parseFloat(r.sumOpenInterest),
+  }));
+}
+
+// ─── Calculations ────────────────────────────────────────────────────────────
 
 /** Log returns: r_t = ln(P_t / P_{t-1}). */
 export function logReturns(prices: number[]): number[] {
@@ -42,9 +111,68 @@ export function stdev(xs: number[]): number {
 }
 
 /** Volatilitas tahunan (crypto = 365 hari). */
-export function annualizedVolatility(returns: number[], periodsPerYear = 365): number {
+export function annualizedVolatility(
+  returns: number[],
+  periodsPerYear = 365
+): number {
   return stdev(returns) * Math.sqrt(periodsPerYear);
 }
+
+/** Simple Moving Average. */
+export function sma(prices: number[], period: number): (number | null)[] {
+  const result: (number | null)[] = [];
+  for (let i = 0; i < prices.length; i++) {
+    if (i < period - 1) {
+      result.push(null);
+    } else {
+      const slice = prices.slice(i - period + 1, i + 1);
+      result.push(slice.reduce((a, b) => a + b, 0) / period);
+    }
+  }
+  return result;
+}
+
+/** Generate trading signals berdasarkan MA crossover + volatility regime. */
+export function generateSignals(
+  prices: number[],
+  shortPeriod = 7,
+  longPeriod = 25
+): Signal[] {
+  const shortMA = sma(prices, shortPeriod);
+  const longMA = sma(prices, longPeriod);
+  const rets = logReturns(prices);
+  const signals: Signal[] = [];
+
+  for (let i = 1; i < prices.length; i++) {
+    const s = shortMA[i];
+    const l = longMA[i];
+    const sPrev = shortMA[i - 1];
+    const lPrev = longMA[i - 1];
+
+    if (s === null || l === null || sPrev === null || lPrev === null) {
+      signals.push({ day: i, type: "NEUTRAL", reason: "Insufficient data" });
+      continue;
+    }
+
+    // MA crossover
+    if (sPrev <= lPrev && s > l) {
+      signals.push({ day: i, type: "BUY", reason: `MA${shortPeriod} crosses above MA${longPeriod}` });
+    } else if (sPrev >= lPrev && s < l) {
+      signals.push({ day: i, type: "SELL", reason: `MA${shortPeriod} crosses below MA${longPeriod}` });
+    } else {
+      // Volatility regime check
+      const recentVol = i >= 15 ? stdev(rets.slice(Math.max(0, i - 15), i)) * Math.sqrt(365) : 0;
+      if (recentVol > 0.8) {
+        signals.push({ day: i, type: "SELL", reason: `High volatility regime (${(recentVol * 100).toFixed(0)}% ann.)` });
+      } else {
+        signals.push({ day: i, type: "NEUTRAL", reason: "" });
+      }
+    }
+  }
+  return signals;
+}
+
+// ─── Simulation ──────────────────────────────────────────────────────────────
 
 /**
  * Simulasi Geometric Brownian Motion.
@@ -56,7 +184,6 @@ export function simulateGBM(params: {
   sigma: number;
   days: number;
   paths: number;
-  seed?: number;
 }): number[][] {
   const { s0, mu, sigma, days, paths } = params;
   const dt = 1 / 365;
@@ -85,29 +212,42 @@ function gaussianRandom(): number {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
-/**
- * Verifikasi numerik integral ganda = ln(2) pakai Simpson 2D.
- * ∫₀¹ ∫₀¹ 1 / [(1 - xy)(1 + x)(1 + y)] dx dy
- */
-export function verifyDoubleIntegral(n = 200): number {
-  const h = 1 / n;
-  const f = (x: number, y: number) =>
-    1 / ((1 - x * y) * (1 + x) * (1 + y));
+// ─── Foundation ──────────────────────────────────────────────────────────────
 
-  // Simpson 1/3 weights
-  const w = (i: number) => {
-    if (i === 0 || i === n) return 1;
-    return i % 2 === 0 ? 2 : 4;
+/**
+ * Verifikasi numerik integral ganda = ln(2) pakai Simpson's 1/3 Rule (2D).
+ * ∫₀¹ ∫₀¹ 1 / [(1 - xy)(1 + x)(1 + y)] dx dy
+ *
+ * n HARUS genap (Simpson's rule requirement).
+ */
+export function verifyDoubleIntegral(n = 100): number {
+  // Pastikan n genap
+  if (n % 2 !== 0) n += 1;
+
+  const h = 1 / n;
+  const f = (x: number, y: number) => {
+    const denom = (1 - x * y) * (1 + x) * (1 + y);
+    if (Math.abs(denom) < 1e-15) return 0;
+    return 1 / denom;
+  };
+
+  // Simpson's composite rule weight
+  const weight = (i: number, N: number): number => {
+    if (i === 0 || i === N) return 1;
+    if (i % 2 === 1) return 4;
+    return 2;
   };
 
   let sum = 0;
   for (let i = 0; i <= n; i++) {
+    const x = i * h;
+    const wx = weight(i, n);
     for (let j = 0; j <= n; j++) {
-      // Hindari titik singular x=y=1
-      const x = i === n ? 1 - 1e-9 : i * h;
-      const y = j === n ? 1 - 1e-9 : j * h;
-      sum += w(i) * w(j) * f(x, y);
+      const y = j * h;
+      const wy = weight(j, n);
+      sum += wx * wy * f(x, y);
     }
   }
+
   return (sum * h * h) / 9;
 }
